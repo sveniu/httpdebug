@@ -1,0 +1,93 @@
+WARNING: Not tested in production
+
+This is a collection of configuration files, documentation and
+proof-of-concept scripts for selective web request debugging, aimed
+specifically at web developers, devops and operations. The idea is
+simply to write as much debugging information as possible to syslog as
+long as the client has specified two HTTP variables:
+
+  X-Debug-Level: n
+  X-Debug-Key: mydebugkey
+
+The debug level corresponds to the standard syslog levels (0 to 7),
+and the key is used as a simple authorization mechanism, as extensive
+debugging is likely to have an impact on performance.
+
+Any node in the request path would then typically log details to
+a central syslog server, and the developer/admin would then be able to
+tail the request in realtime at a single point, as it passes through
+any node, proxy or application on the way. This of course depends on
+having a properly configured central syslog server available.
+
+A web server like Apache would typically map the request debug headers
+to environment variables, for further use in applications. See the
+included Apache configuration.
+
+TODO:
+* F5 BIG-IP v10 and v11 configuration/documentation.
+* A10 Networks AX configuration/documentation.
+* Other web servers, such as lighttpd, cherokee.
+* Appropriate use of log levels.
+* More thought-through use of syslog facilities and levels.
+* Tips on cgi/application logging, including SQL.
+* Recommendations on syslog server configuration / interface.
+
+Here's an example of what is possible with a combination of Varnish,
+Apache and a simple cgi script that runs some trivial sql. The local
+syslogd (rsyslog in this case) is set up with microsecond timestamps
+to provide further insight into timing. The number in parathesis is
+the Varnish request ID, but this ID could be derived from anything,
+for example a rng at the first node in the path.
+
+Comments are added for clarity.
+
+# Client fires off a request with debug headers set.
+client:~$ wget -q --header "X-Debug-Level: 7" \
+--header "X-Debug-Key: mydebugkey" \
+http://t.example.net:6081/~sveniu/debug/cgitest.py
+
+# Varnish receives the request. It misses the cache and is passed to
+# the backend Apache.
+2012-06-04T21:56:45.629274+02:00 varnishd[2542]: vcl_recv(126139968) Debugging request 127.0.0.1 -> 127.0.1.1:6081, debuglevel=7
+2012-06-04T21:56:45.629295+02:00 varnishd[2542]: vcl_recv(126139968) Req: GET http://t.example.net:6081/~sveniu/debug/test.cgi HTTP/1.1
+2012-06-04T21:56:45.629300+02:00 varnishd[2542]: vcl_recv(126139968) User-Agent: Wget/1.13.4 (linux-gnu)
+2012-06-04T21:56:45.629304+02:00 varnishd[2542]: vcl_recv(126139968) Backend: default (healthy=true)
+2012-06-04T21:56:45.630139+02:00 varnishd[2542]: vcl_miss(126139968) Cache miss: /~sveniu/debug/test.cgi
+2012-06-04T21:56:45.630151+02:00 varnishd[2542]: vcl_miss(126139968) Backend will see X-Forwarded-For: 127.0.0.1
+
+# Apache's input filter processes the request first.
+2012-06-04T21:56:45.657822+02:00 a2filter[2632]: req(126139968): Debugging request 127.0.0.1:42791 -> 127.0.0.1:6081, debuglevel=7, pppid=2605
+2012-06-04T21:56:45.657892+02:00 a2filter[2632]: req(126139968): GET http://t.example.net/~sveniu/debug/test.cgi HTTP/1.1, script_filename=/home/sveniu/public_html/debug/test.cgi
+2012-06-04T21:56:45.657946+02:00 a2filter[2632]: req(126139968): HTTP header: User-Agent = Wget/1.13.4 (linux-gnu)
+2012-06-04T21:56:45.657981+02:00 a2filter[2632]: req(126139968): HTTP header: Host = t.example.net:6081
+2012-06-04T21:56:45.658010+02:00 a2filter[2632]: req(126139968): HTTP header: X-Varnish = 126139968
+2012-06-04T21:56:45.658039+02:00 a2filter[2632]: req(126139968): HTTP header: Accept = */*
+2012-06-04T21:56:45.658069+02:00 a2filter[2632]: req(126139968): HTTP header: X-Forwarded-For = 127.0.0.1
+2012-06-04T21:56:45.658102+02:00 a2filter[2632]: req(126139968): HTTP header: X-Debug-Key = mydebugkey
+2012-06-04T21:56:45.658129+02:00 a2filter[2632]: req(126139968): HTTP header: X-Debug-Level = 7
+2012-06-04T21:56:45.658156+02:00 a2filter[2632]: req(126139968): HTTP header: Accept-Encoding = gzip
+
+# The cgi program then runs, executes some sql, logs 'EXPLAIN ANALYZE'
+# results, resource usage, etc.
+2012-06-04T21:56:45.681706+02:00 cgi[2631]: req(126139968): 127.0.0.1:42791 -> 127.0.0.1:6081, debuglevel=7, pppid=2605
+2012-06-04T21:56:45.681731+02:00 cgi[2631]: req(126139968): GET http://t.example.net/~sveniu/debug/test.cgi HTTP/1.1, script_filename=/home/sveniu/public_html/debug/test.cgi
+2012-06-04T21:56:45.681737+02:00 cgi[2631]: req(126139968): Connecting to db, dbname=cgi, dbuser=cgi
+2012-06-04T21:56:45.685075+02:00 cgi[2631]: req(126139968): SQL query: select * from hits
+2012-06-04T21:56:45.686670+02:00 cgi[2631]: req(126139968): SQL analyze: Seq Scan on hits  (cost=0.00..29.40 rows=1940 width=12) (actual time=0.008..0.009 rows=2 loops=1)
+2012-06-04T21:56:45.686689+02:00 cgi[2631]: req(126139968): SQL analyze: Total runtime: 0.061 ms
+2012-06-04T21:56:45.687194+02:00 cgi[2631]: req(126139968): Wall clock elapsed: 0.005704
+2012-06-04T21:56:45.687306+02:00 cgi[2631]: req(126139968): resource.struct_rusage(ru_utime=0.044002, ru_stime=0.004, ru_maxrss=8028, ru_ixrss=0, ru_idrss=0, ru_isrss=0, ru_minflt=2347, ru_majflt=0, ru_nswap=0, ru_inblock=0, ru_oublock=0, ru_msgsnd=0, ru_msgrcv=0, ru_nsignals=0, ru_nvcsw=6, ru_nivcsw=8)
+
+# Varnish receives the backend response.
+2012-06-04T21:56:45.694026+02:00 varnishd[2542]: vcl_fetch(126139968) Backend response complete: default (127.0.0.1:80): 200 OK, ttl=120.000, grace=0.000
+
+# Apache logs the request using a custom format. While this should in
+# theory happen before Varnish receives the response, it could be due
+# to syslog() call timing or Varnish logging the response before
+# Apache has finished the delivery completely.
+2012-06-04T21:56:45.694051+02:00 apache2log[2603]: response(126139968) http://t.example.net/~sveniu/debug/test.cgi 200 (200), remote=127.0.0.1:42791, local=127.0.0.1:80 usecs=63383; bytes=20; pid=2630; keepalives=0; xff=127.0.0.1
+
+# Varnish delivers the object to the client.
+2012-06-04T21:56:45.694057+02:00 varnishd[2542]: vcl_deliver(126139968) Delivering object.
+
+

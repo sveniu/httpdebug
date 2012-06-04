@@ -1,0 +1,99 @@
+#!/usr/bin/python
+
+# Simple proof of concept Apache input filter to demonstrate selective
+# request debugging based on environment variables. In this case we
+# have Apache's mod_rewrite map client HTTP headers to environment
+# variables, which are then used to determine debug output to syslog.
+#
+# Notes:
+# * This program is only run if Apache's ExtFilterDefine matches on
+#   the XDEBUGTRACE env var, set only if XDEBUGLEVEL >= 7.
+# * This example uses Linux-specific grandparent pid code.
+# * There's currently no discerning of debug levels.
+
+import os
+import sys
+import syslog
+
+# Maximum size of printable POST payload. Larger payloads won't be
+# printed to the log.
+MAX_PAYLOAD_PRINT = 128
+
+# On each request, Apache does a fork and then runs the input filter
+# as a child process of that forked process. To point back to the
+# origin Apache pid, we need the grand parent of our own pid.
+# Unfortunately, this needs Linux-specific code.
+# Source: http://stackoverflow.com/a/1732073
+def pnid(pid=None, N=1):
+    "Get parent (if N==1), grandparent (if N==2), ... of pid (or self if not given)"
+    if pid is None:
+        pid= "self"
+    while N > 0:
+        filename= "/proc/%s/status" % pid
+        with open(filename, "r") as fp:
+            for line in fp:
+                if line.startswith("PPid:"):
+                    _, _, pid= line.rpartition("\t")
+                    pid= pid.rstrip() # drop the '\n' at end
+                    break
+            else:
+                raise RuntimeError, "can't locate PPid line in %r" % filename
+        N-= 1
+    return int(pid) # let it fail through
+
+# Obtain unique per-request ID
+xid = os.getenv('XDEBUGXID')
+if not xid:
+    xid = '-'
+
+syslog.openlog('a2filter', logoption=syslog.LOG_PID)
+syslog.syslog('req(%s): Debugging request %s:%s -> %s:%s, debuglevel=%s, pppid=%d' % \
+        (
+            xid,
+            os.getenv('REMOTE_ADDR'),
+            os.getenv('REMOTE_PORT'),
+            os.getenv('SERVER_ADDR'),
+            os.getenv('SERVER_PORT'),
+            os.getenv('XDEBUGLEVEL'),
+            pnid(N=2),
+        ))
+syslog.syslog('req(%s): %s %s://%s%s%s %s, script_filename=%s' % \
+        (
+            xid,
+            os.getenv('REQUEST_METHOD'),
+            'https' if os.getenv('HTTPS') else 'http',
+            os.getenv('REMOTE_USER')+'@' if os.getenv('REMOTE_USER') else '',
+            os.getenv('SERVER_NAME'),
+            os.getenv('REQUEST_URI'),
+            os.getenv('SERVER_PROTOCOL'),
+            os.getenv('SCRIPT_FILENAME'),
+        ))
+
+for e in os.environ.keys():
+    if e.startswith('HTTP_'):
+        syslog.syslog('req(%s): HTTP header: %s = %s' % \
+                (
+                    xid,
+                    e.split('_', 1)[1].replace('_', '-').title(),
+                    os.environ[e],
+                ))
+
+for e in os.environ.keys():
+    if e.startswith('SSL_'):
+        syslog.syslog('req(%s): SSL param: %s = %s' % \
+                (
+                    xid,
+                    e.split('_', 1),
+                    os.environ[e],
+                ))
+
+payload = sys.stdin.read()
+if payload:
+    syslog.syslog('req(%s): %d bytes payload%s' % \
+            (
+                xid,
+                len(payload),
+                ': '+payload if len(payload) < MAX_PAYLOAD_PRINT else '',
+            ))
+
+syslog.closelog()

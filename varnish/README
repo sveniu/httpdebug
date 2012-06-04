@@ -1,0 +1,39 @@
+These debug configuration files can be included from the Varnish
+default.vcl, like in this simple example:
+
+################################
+import std; /* Required for std.syslog() */
+
+backend default {
+    .host = "127.0.0.1";
+    .port = "80";
+}
+
+sub vcl_recv {
+    include "debug-recv.vcl";
+}
+
+sub vcl_pass {
+    include "debug-pass.vcl";
+}
+
+sub vcl_hit {
+    include "debug-hit.vcl";
+}
+
+sub vcl_miss {
+    include "debug-miss.vcl";
+}
+
+sub vcl_fetch {
+    include "debug-fetch.vcl";
+}
+
+sub vcl_deliver {
+    include "debug-deliver.vcl";
+}
+
+sub vcl_error {
+    include "debug-error.vcl";
+}
+################################

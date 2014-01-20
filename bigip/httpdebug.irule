@@ -62,7 +62,7 @@ when LB_FAILED {
 }
 
 when SERVER_CONNECTED {
-	f {$static::httpdebug_key_ok} {
+	if {$static::httpdebug_key_ok} {
 		log local$static::httpdebug_level. "($static::sid) Connection to pool server [LB::server addr] successful."
 	}
 }

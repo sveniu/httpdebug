@@ -1,0 +1,87 @@
+when RULE_INIT {
+	# set the HTTP debug key here
+	set static::httpdebug_key "mydebugkey"
+}
+
+when HTTP_REQUEST {
+	# could not find a proper way to identify session
+	set http_request_time [expr {[clock clicks -milliseconds]} * -1]
+		set sid "[IP::remote_addr]:[TCP::client_port].$http_request_time"
+		binary scan [md5 $sid] H* sid
+		set static::sid $sid
+
+		HTTP::header insert X-Unique-ID $static::sid
+
+		set static::displayport ""
+		if {[TCP::local_port] eq 443} {
+			set static::protocol "https"
+		} elseif {[TCP::local_port] eq 80} {
+			set static::protocol "http"
+		} else {
+			set static::displayport ":[TCP::local_port]"
+				set static::protocol "http"
+		}
+
+	if {[HTTP::header exists X-Debug-Key]} {
+		if {[HTTP::header X-Debug-Key] equals $static::httpdebug_key} {
+			set static::httpdebug_level 0
+				set static::httpdebug_key_ok 1
+		}
+	}
+
+	if {[HTTP::header exists X-Debug-Level] && $static::httpdebug_key_ok} {
+		set static::httpdebug_level [HTTP::header X-Debug-Level]
+	}
+
+	if {$static::httpdebug_key_ok} {
+		log local$static::httpdebug_level. "($static::sid) Debug request [IP::remote_addr]:[TCP::client_port] -> [IP::local_addr]:[TCP::local_port], debuglevel=$static::httpdebug_level."
+			log local$static::httpdebug_level. "($static::sid) Req: [HTTP::method] $static::protocol://[HTTP::host]$static::displayport[HTTP::path] HTTP [HTTP::version]"
+
+			if {[HTTP::header exists User-Agent]} {
+				log local$static::httpdebug_level. "($static::sid) User-Agent: [HTTP::header value User-Agent]"
+			}
+
+		log local$static::httpdebug_level. "($static::sid) Backend will see X-Forwarded-For: [IP::remote_addr]"
+
+			if {[active_members [LB::server pool]] < 1} {
+				log local$static::httpdebug_level. "($static::sid) All pool members are inactive, will not be able to handle request."
+			}
+	}
+}
+
+when LB_SELECTED {
+	if {$static::httpdebug_key_ok} {
+		log local$static::httpdebug_level. "($static::sid) Selected pool server for request: [LB::server addr]"
+	}
+}
+
+when LB_FAILED {
+	if {$static::httpdebug_key_ok} {
+		log local$static::httpdebug_level. "($static::sid) [LB::server addr] failed."
+	}
+}
+
+when SERVER_CONNECTED {
+	if {$static::httpdebug_key_ok} {
+		log local$static::httpdebug_level. "($static::sid) Connection to pool server [LB::server addr] successful."
+	}
+}
+
+when SERVER_CLOSED {
+	if {$static::httpdebug_key_ok} {
+		log local$static::httpdebug_level. "($static::sid) Pool server [LB::server addr] ended transaction."
+	}
+}
+
+when HTTP_RESPONSE {
+	if {$static::httpdebug_key_ok} {
+		log local$static::httpdebug_level. "($static::sid) [LB::server addr]:[LB::server port] responded with status code [HTTP::status]."
+	}
+}
+
+when CLIENT_CLOSED {
+	if {$static::httpdebug_key_ok} {
+		log local$static::httpdebug_level. "($static::sid) Client closed connection."
+	}
+}
+
